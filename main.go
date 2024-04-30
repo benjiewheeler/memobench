@@ -271,6 +271,7 @@ func SendTransactions() {
 
 			if GlobalConfig.PrioFee > 0 {
 				instructions = append(instructions, computebudget.NewSetComputeUnitPriceInstruction(uint64(GlobalConfig.PrioFee*1e6)).Build())
+				instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(30000).Build())
 			}
 
 			instructions = append(instructions, solana.NewInstruction(
