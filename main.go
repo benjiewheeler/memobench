@@ -137,6 +137,10 @@ func (l *WebsocketListener) Start() {
 }
 
 func (l *WebsocketListener) Stop() {
+	if !l.Listening {
+		return
+	}
+
 	l.Listening = false
 	l.Subscription.Unsubscribe()
 }
@@ -174,6 +178,8 @@ var (
 	TxTimes = make(map[solana.Signature]time.Time)
 
 	WsListener *WebsocketListener
+
+	SimpleLogger *log.Logger
 )
 
 func SetupLogger() {
@@ -183,14 +189,18 @@ func SetupLogger() {
 		log.Fatalf("error opening file: %v", err)
 	}
 
-	logger := log.NewWithOptions(io.MultiWriter(os.Stdout, logFile), log.Options{
+	multi := io.MultiWriter(os.Stdout, logFile)
+
+	SimpleLogger = log.NewWithOptions(multi, log.Options{
+		ReportTimestamp: false,
+	})
+
+	log.SetDefault(log.NewWithOptions(multi, log.Options{
 		Prefix:          TestID,
 		ReportTimestamp: true,
 		TimeFunction:    func(time.Time) time.Time { return time.Now().UTC() },
 		TimeFormat:      "15:04:05.0000",
-	})
-
-	log.SetDefault(logger)
+	}))
 }
 
 func ReadConfig() *Config {
@@ -359,6 +369,12 @@ func main() {
 		log.Info("CTRL+C detected, Force stopping the test")
 		fmt.Println()
 
+		// if the websocket is not listening, exit immediately
+		// no need to call stop and log the test results
+		if !WsListener.Listening {
+			os.Exit(0)
+		}
+
 		WsListener.Stop()
 	}()
 
@@ -384,15 +400,15 @@ func main() {
 	Limiter.SetLimit(rate.Limit(GlobalConfig.RateLimit))
 	Limiter.SetBurst(int(GlobalConfig.RateLimit))
 
-	fmt.Printf("Starting Test ID    : %s\n", TestID)
-	fmt.Printf("Test Account        : %s\n", TestAccount.PublicKey())
-	fmt.Printf("RPC URL             : %s\n", GlobalConfig.RpcUrl)
-	fmt.Printf("WS URL              : %s\n", GlobalConfig.GetWsUrl())
-	fmt.Printf("RPC Send URL        : %s\n", GlobalConfig.GetSendUrl())
-	fmt.Printf("Transaction Count   : %d\n", GlobalConfig.TxCount)
-	fmt.Printf("Priority Fee        : %f Lamports (%.9f SOL)\n", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*25000.0)/1e9)
-	fmt.Printf("Node Retries        : %d\n", GlobalConfig.NodeRetries)
-	fmt.Println()
+	SimpleLogger.Printf("Date                : %s", time.Now().UTC().Format(time.RFC1123))
+	SimpleLogger.Printf("Starting Test ID    : %s", TestID)
+	SimpleLogger.Printf("RPC URL             : %s", GlobalConfig.RpcUrl)
+	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
+	SimpleLogger.Printf("RPC Send URL        : %s", GlobalConfig.GetSendUrl())
+	SimpleLogger.Printf("Transaction Count   : %d", GlobalConfig.TxCount)
+	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000)/1e9)
+	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
+	SimpleLogger.Printf("")
 
 	// start the websocket listener
 	wg.Add(1)
@@ -400,15 +416,15 @@ func main() {
 	go WsListener.Start()
 	wg.Wait()
 
-	fmt.Println()
-	fmt.Printf("Finished Test ID    : %s\n", TestID)
-	fmt.Printf("RPC URL             : %s\n", GlobalConfig.RpcUrl)
-	fmt.Printf("WS URL              : %s\n", GlobalConfig.GetWsUrl())
-	fmt.Printf("RPC Send URL        : %s\n", GlobalConfig.GetSendUrl())
-	fmt.Printf("Transaction Count   : %d\n", GlobalConfig.TxCount)
-	fmt.Printf("Priority Fee        : %f Lamports (%.9f SOL)\n", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*25000.0)/1e9)
-	fmt.Printf("Node Retries        : %d\n", GlobalConfig.NodeRetries)
-	fmt.Printf("Transactions Landed : %d/%d (%.1f%%)\n", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
+	SimpleLogger.Printf("")
+	SimpleLogger.Printf("Finished Test ID    : %s", TestID)
+	SimpleLogger.Printf("RPC URL             : %s", GlobalConfig.RpcUrl)
+	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
+	SimpleLogger.Printf("RPC Send URL        : %s", GlobalConfig.GetSendUrl())
+	SimpleLogger.Printf("Transaction Count   : %d", GlobalConfig.TxCount)
+	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000)/1e9)
+	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
+	SimpleLogger.Printf("Transactions Landed : %d/%d (%.1f%%)", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
 	fmt.Println()
 	fmt.Printf("Benchmark results saved to %s\n", LogFileName)
 }
