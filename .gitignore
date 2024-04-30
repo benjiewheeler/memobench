@@ -25,3 +25,9 @@ memobench_*.log
 
 # config file
 config.json
+
+# binary output directory
+bin
+
+# development scripts
+scripts

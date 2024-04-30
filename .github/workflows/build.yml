@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "*"
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - name: Checkout the code
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          check-latest: true
+          go-version-file: go.mod
+
+      - name: Build binaries
+        working-directory: .
+        run: |
+          platforms=(
+              "darwin amd64 memobench_macos_x86_64"
+              "darwin arm64 memobench_macos_arm64"
+              "linux amd64 memobench_linux_x86_64"
+              "windows amd64 memobench_windows_x86_64.exe"
+          )
+
+          mkdir -p bin 2>/dev/null
+
+          for i in "${platforms[@]}"; do
+              set -- $i
+
+              output_name=$3
+
+              CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -ldflags "-extldflags=-static -s -w" -trimpath -o bin/$output_name .
+              chmod +x bin/$output_name
+          done
+        shell: bash
+
+      - name: Release
+        uses: softprops/action-gh-release@v1
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            bin/*
