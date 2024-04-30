@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/charmbracelet/log"
@@ -50,6 +52,95 @@ func (c *Config) GetSendUrl() string {
 	return c.RpcUrl
 }
 
+type WebsocketListener struct {
+	Subscription *ws.LogSubscription
+	Listening    bool
+}
+
+func (l *WebsocketListener) Start() {
+	wsClient, err := ws.Connect(context.TODO(), GlobalConfig.GetWsUrl())
+	if err != nil {
+		log.Fatalf("error connecting to websocket: %v", err)
+	}
+
+	defer wg.Done()
+
+	l.Subscription, err = wsClient.LogsSubscribeMentions(TestAccount.PublicKey(), rpc.CommitmentProcessed)
+	if err != nil {
+		log.Fatalf("error subscribing to logs: %v", err)
+	}
+	l.Listening = true
+
+	log.Info("Listening for transactions...")
+
+	// start sending transactions now that the websocket is ready
+	SendTransactions()
+
+	for l.Listening {
+		got, err := l.Subscription.Recv()
+		if err != nil {
+			log.Error(err.Error())
+		}
+
+		if got == nil || got.Value.Err != nil {
+			continue
+		}
+
+		re := regexp.MustCompile(`memobench:.*?(\d+).*\[(.*?)\]`)
+		for _, line := range got.Value.Logs {
+			matches := re.FindStringSubmatch(line)
+			if len(matches) != 3 {
+				continue
+			}
+			testNum, id := matches[1], matches[2]
+
+			if id != TestID {
+				log.Warn(
+					"Received unexpected test ID",
+					"num", testNum,
+					"id", id,
+					"sig", got.Value.Signature.String(),
+				)
+				continue
+			}
+
+			mu.Lock()
+			txSendTime, found := TxTimes[got.Value.Signature]
+			if found {
+				ProcessedTransactions += 1
+			}
+			mu.Unlock()
+
+			// skip this tx if it's not in the TxTimes map
+			// this could happen if the test was restarted and a tx from a previous test landed
+			if !found {
+				continue
+			}
+
+			delta := time.Since(txSendTime)
+			log.Info(
+				"Tx Processed",
+				"num", testNum,
+				"sig", got.Value.Signature.String(),
+				"delta", delta.Truncate(time.Millisecond),
+				"landed", fmt.Sprintf("%d/%d", ProcessedTransactions, SentTransactions),
+			)
+
+			if ProcessedTransactions >= SentTransactions {
+				l.Stop()
+			}
+			break
+		}
+	}
+
+	log.Info("Stopping listening for log events...")
+}
+
+func (l *WebsocketListener) Stop() {
+	l.Listening = false
+	l.Subscription.Unsubscribe()
+}
+
 var (
 	DEFAULT_CONFIG = Config{
 		RpcUrl:    "http://node.foo.cc",
@@ -81,6 +172,8 @@ var (
 
 	// transaction send times
 	TxTimes = make(map[solana.Signature]time.Time)
+
+	WsListener *WebsocketListener
 )
 
 func SetupLogger() {
@@ -143,92 +236,6 @@ func VerifyPrivateKey(base58key string) {
 	TestAccount = &account
 }
 
-func StartWebsocket() {
-	wsClient, err := ws.Connect(context.TODO(), GlobalConfig.GetWsUrl())
-	if err != nil {
-		log.Fatalf("error connecting to websocket: %v", err)
-	}
-
-	defer wg.Done()
-
-	sub, err := wsClient.LogsSubscribeMentions(TestAccount.PublicKey(), rpc.CommitmentProcessed)
-	if err != nil {
-		log.Fatalf("error subscribing to logs: %v", err)
-	}
-
-	log.Info("Listening for transactions...")
-
-	// start sending transactions now that the websocket is ready
-	SendTransactions()
-
-	var listen bool = true
-
-	time.AfterFunc(time.Until(StopTime), func() {
-		listen = false
-		sub.Unsubscribe()
-	})
-
-	for listen {
-		got, err := sub.Recv()
-		if err != nil {
-			log.Error(err.Error())
-		}
-
-		if got == nil || got.Value.Err != nil {
-			continue
-		}
-
-		re := regexp.MustCompile(`memobench:.*?(\d+).*\[(.*?)\]`)
-		for _, line := range got.Value.Logs {
-			matches := re.FindStringSubmatch(line)
-			if len(matches) != 3 {
-				continue
-			}
-			testNum, id := matches[1], matches[2]
-
-			if id != TestID {
-				log.Warn(
-					"Received unexpected test ID",
-					"num", testNum,
-					"id", id,
-					"sig", got.Value.Signature.String(),
-				)
-				continue
-			}
-
-			mu.Lock()
-			txSendTime, found := TxTimes[got.Value.Signature]
-			if found {
-				ProcessedTransactions += 1
-			}
-			mu.Unlock()
-
-			// skip this tx if it's not in the TxTimes map
-			// this could happen if the test was restarted and a tx from a previous test landed
-			if !found {
-				continue
-			}
-
-			delta := time.Since(txSendTime)
-			log.Info(
-				"Tx Processed",
-				"num", testNum,
-				"sig", got.Value.Signature.String(),
-				"delta", delta.Truncate(time.Millisecond),
-				"landed", fmt.Sprintf("%d/%d", ProcessedTransactions, SentTransactions),
-			)
-
-			if ProcessedTransactions >= SentTransactions {
-				listen = false
-				sub.Unsubscribe()
-			}
-			break
-		}
-	}
-
-	log.Info("Stopping listening for log events...")
-}
-
 func SendTransactions() {
 	// Create a new RPC client:
 	rpcClient := rpc.New(GlobalConfig.RpcUrl)
@@ -246,13 +253,10 @@ func SendTransactions() {
 	// hash expire after 150 blocks, each block is about 400ms
 	// we use 160 blocks just out of abundance of caution
 	StopTime = time.Now().Add(160 * 400 * time.Millisecond)
+	time.AfterFunc(time.Until(StopTime), WsListener.Stop)
 
 	for i := uint64(0); i < GlobalConfig.TxCount; i++ {
-		wg.Add(1)
-
 		go func(id uint64) {
-			defer wg.Done()
-
 			instructions := []solana.Instruction{}
 
 			if GlobalConfig.PrioFee > 0 {
@@ -346,6 +350,18 @@ func main() {
 	fmt.Println(" ╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝ ")
 	fmt.Println("                                                                                   ")
 
+	c := make(chan os.Signal)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-c
+
+		fmt.Println()
+		log.Info("CTRL+C detected, Force stopping the test")
+		fmt.Println()
+
+		WsListener.Stop()
+	}()
+
 	// generate the test id
 	randomBytes := make([]byte, 4)
 	_, err := rand.Read(randomBytes)
@@ -374,23 +390,23 @@ func main() {
 	fmt.Printf("WS URL              : %s\n", GlobalConfig.GetWsUrl())
 	fmt.Printf("RPC Send URL        : %s\n", GlobalConfig.GetSendUrl())
 	fmt.Printf("Transaction Count   : %d\n", GlobalConfig.TxCount)
-	fmt.Printf("Priority Fee        : %f Lamports\n", GlobalConfig.PrioFee)
+	fmt.Printf("Priority Fee        : %f Lamports (%.9f SOL)\n", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*25000.0)/1e9)
 	fmt.Printf("Node Retries        : %d\n", GlobalConfig.NodeRetries)
 	fmt.Println()
 
 	// start the websocket listener
 	wg.Add(1)
-	go StartWebsocket()
-
+	WsListener = new(WebsocketListener)
+	go WsListener.Start()
 	wg.Wait()
 
 	fmt.Println()
-	fmt.Printf("Test ID             : %s\n", TestID)
+	fmt.Printf("Finished Test ID    : %s\n", TestID)
 	fmt.Printf("RPC URL             : %s\n", GlobalConfig.RpcUrl)
 	fmt.Printf("WS URL              : %s\n", GlobalConfig.GetWsUrl())
 	fmt.Printf("RPC Send URL        : %s\n", GlobalConfig.GetSendUrl())
 	fmt.Printf("Transaction Count   : %d\n", GlobalConfig.TxCount)
-	fmt.Printf("Priority Fee        : %f Lamports\n", GlobalConfig.PrioFee)
+	fmt.Printf("Priority Fee        : %f Lamports (%.9f SOL)\n", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*25000.0)/1e9)
 	fmt.Printf("Node Retries        : %d\n", GlobalConfig.NodeRetries)
 	fmt.Printf("Transactions Landed : %d/%d (%.1f%%)\n", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
 	fmt.Println()
