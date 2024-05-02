@@ -21,6 +21,7 @@ import (
 	"github.com/gagliardetto/solana-go/rpc"
 	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/gagliardetto/solana-go/rpc/ws"
+	"github.com/montanaflynn/stats"
 	"golang.org/x/time/rate"
 )
 
@@ -65,6 +66,9 @@ func (l *WebsocketListener) Start() {
 
 	defer wg.Done()
 
+	// invoke the default stop timer
+	time.AfterFunc(time.Until(StopTime), WsListener.Stop)
+
 	l.Subscription, err = wsClient.LogsSubscribeMentions(TestAccount.PublicKey(), rpc.CommitmentProcessed)
 	if err != nil {
 		log.Fatalf("error subscribing to logs: %v", err)
@@ -104,10 +108,13 @@ func (l *WebsocketListener) Start() {
 				continue
 			}
 
+			var delta time.Duration
 			mu.Lock()
 			txSendTime, found := TxTimes[got.Value.Signature]
 			if found {
 				ProcessedTransactions += 1
+				delta = time.Since(txSendTime)
+				TxDeltas = append(TxDeltas, delta)
 			}
 			mu.Unlock()
 
@@ -117,12 +124,11 @@ func (l *WebsocketListener) Start() {
 				continue
 			}
 
-			delta := time.Since(txSendTime)
 			log.Info(
 				"Tx Processed",
 				"num", testNum,
 				"sig", got.Value.Signature.String(),
-				"delta", delta.Truncate(time.Millisecond),
+				"delta", delta.Truncate(time.Millisecond).String(),
 				"landed", fmt.Sprintf("%d/%d", ProcessedTransactions, SentTransactions),
 			)
 
@@ -176,6 +182,9 @@ var (
 
 	// transaction send times
 	TxTimes = make(map[solana.Signature]time.Time)
+
+	// delta between transaction send times and landing times
+	TxDeltas = []time.Duration{}
 
 	WsListener *WebsocketListener
 
@@ -407,7 +416,7 @@ func main() {
 	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
 	SimpleLogger.Printf("RPC Send URL        : %s", GlobalConfig.GetSendUrl())
 	SimpleLogger.Printf("Transaction Count   : %d", GlobalConfig.TxCount)
-	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000)/1e9)
+	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000+5000)/float64(solana.LAMPORTS_PER_SOL))
 	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
 	SimpleLogger.Printf("")
 
@@ -418,14 +427,38 @@ func main() {
 	wg.Wait()
 
 	SimpleLogger.Printf("")
-	SimpleLogger.Printf("Finished Test ID    : %s", TestID)
-	SimpleLogger.Printf("RPC URL             : %s", GlobalConfig.RpcUrl)
-	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
-	SimpleLogger.Printf("RPC Send URL        : %s", GlobalConfig.GetSendUrl())
-	SimpleLogger.Printf("Transaction Count   : %d", GlobalConfig.TxCount)
-	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000)/1e9)
-	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
-	SimpleLogger.Printf("Transactions Landed : %d/%d (%.1f%%)", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
+	SimpleLogger.Printf("Finished Test ID       : %s", TestID)
+	SimpleLogger.Printf("RPC URL                : %s", GlobalConfig.RpcUrl)
+	SimpleLogger.Printf("WS URL                 : %s", GlobalConfig.GetWsUrl())
+	SimpleLogger.Printf("RPC Send URL           : %s", GlobalConfig.GetSendUrl())
+	SimpleLogger.Printf("Transaction Count      : %d", GlobalConfig.TxCount)
+	SimpleLogger.Printf("Priority Fee           : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000+5000)/float64(solana.LAMPORTS_PER_SOL))
+	SimpleLogger.Printf("Node Retries           : %d", GlobalConfig.NodeRetries)
+	SimpleLogger.Printf("Transactions Landed    : %d/%d (%.1f%%)", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
+
+	// calculate landing time results, if there was any
+	if len(TxDeltas) > 0 {
+		var landingTimes []float64
+		for _, v := range TxDeltas {
+			landingTimes = append(landingTimes, float64(v.Nanoseconds()))
+		}
+
+		minDelta, _ := stats.Min(landingTimes)
+		maxDelta, _ := stats.Max(landingTimes)
+		avg, _ := stats.Mean(landingTimes)
+		median, _ := stats.Median(landingTimes)
+		p90, _ := stats.Percentile(landingTimes, 90)
+		p95, _ := stats.Percentile(landingTimes, 95)
+		p99, _ := stats.Percentile(landingTimes, 99)
+
+		SimpleLogger.Printf("Min Tx Landing Time    : %s", (time.Duration(minDelta)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("Max Tx Landing Time    : %s", (time.Duration(maxDelta)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("Avg Tx Landing Time    : %s", (time.Duration(avg)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("Median Tx Landing Time : %s", (time.Duration(median)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("P90 Tx Landing Time    : %s", (time.Duration(p90)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("P95 Tx Landing Time    : %s", (time.Duration(p95)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("P99 Tx Landing Time    : %s", (time.Duration(p99)).Truncate(time.Millisecond))
+	}
 	fmt.Println()
 	fmt.Printf("Benchmark results saved to %s\n", LogFileName)
 }
