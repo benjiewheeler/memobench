@@ -25,6 +25,50 @@ import (
 	"golang.org/x/time/rate"
 )
 
+const (
+	ComputeUnitLimit = 30000
+)
+
+var (
+	DEFAULT_CONFIG = Config{
+		RpcUrl:    "http://node.foo.cc",
+		RateLimit: 200,
+		TxCount:   100,
+		PrioFee:   0,
+	}
+
+	TestID string
+
+	// variable for the log file; set to benchmark.log as a fallback
+	LogFileName string = "benchmark.log"
+
+	GlobalConfig *Config
+	TestAccount  *solana.PrivateKey
+
+	wg sync.WaitGroup
+	mu sync.RWMutex
+
+	// the rate limiter
+	Limiter = rate.NewLimiter(rate.Limit(200), 200)
+
+	// the time the test should end
+	StopTime time.Time
+
+	// the number of transactions sent and transactions that landed
+	SentTransactions      uint64
+	ProcessedTransactions uint64
+
+	// transaction send times
+	TxTimes = make(map[solana.Signature]time.Time)
+
+	// delta between transaction send times and landing times
+	TxDeltas = []time.Duration{}
+
+	WsListener *WebsocketListener
+
+	SimpleLogger *log.Logger
+)
+
 type Config struct {
 	PrivateKey  string  `json:"private_key"`
 	RpcUrl      string  `json:"rpc_url"`
@@ -151,46 +195,6 @@ func (l *WebsocketListener) Stop() {
 	l.Subscription.Unsubscribe()
 }
 
-var (
-	DEFAULT_CONFIG = Config{
-		RpcUrl:    "http://node.foo.cc",
-		RateLimit: 200,
-		TxCount:   100,
-		PrioFee:   0,
-	}
-
-	TestID string
-
-	// variable for the log file; set to benchmark.log as a fallback
-	LogFileName string = "benchmark.log"
-
-	GlobalConfig *Config
-	TestAccount  *solana.PrivateKey
-
-	wg sync.WaitGroup
-	mu sync.RWMutex
-
-	// the rate limiter
-	Limiter = rate.NewLimiter(rate.Limit(200), 200)
-
-	// the time the test should end
-	StopTime time.Time
-
-	// the number of transactions sent and transactions that landed
-	SentTransactions      uint64
-	ProcessedTransactions uint64
-
-	// transaction send times
-	TxTimes = make(map[solana.Signature]time.Time)
-
-	// delta between transaction send times and landing times
-	TxDeltas = []time.Duration{}
-
-	WsListener *WebsocketListener
-
-	SimpleLogger *log.Logger
-)
-
 func SetupLogger() {
 	LogFileName = fmt.Sprintf("memobench_%d_%s.log", time.Now().UnixMilli(), TestID)
 	logFile, err := os.OpenFile(LogFileName, os.O_RDWR|os.O_CREATE, 0666)
@@ -200,10 +204,12 @@ func SetupLogger() {
 
 	multi := io.MultiWriter(os.Stdout, logFile)
 
+	// create a simplified logger for logging the test results
 	SimpleLogger = log.NewWithOptions(multi, log.Options{
 		ReportTimestamp: false,
 	})
 
+	// set the default logger for logging during the test
 	log.SetDefault(log.NewWithOptions(multi, log.Options{
 		Prefix:          TestID,
 		ReportTimestamp: true,
@@ -280,7 +286,7 @@ func SendTransactions() {
 
 			if GlobalConfig.PrioFee > 0 {
 				instructions = append(instructions, computebudget.NewSetComputeUnitPriceInstruction(uint64(GlobalConfig.PrioFee*1e6)).Build())
-				instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(30000).Build())
+				instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(ComputeUnitLimit).Build())
 			}
 
 			instructions = append(instructions, solana.NewInstruction(
@@ -416,7 +422,8 @@ func main() {
 	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
 	SimpleLogger.Printf("RPC Send URL        : %s", GlobalConfig.GetSendUrl())
 	SimpleLogger.Printf("Transaction Count   : %d", GlobalConfig.TxCount)
-	SimpleLogger.Printf("Priority Fee        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000+5000)/float64(solana.LAMPORTS_PER_SOL))
+	SimpleLogger.Printf("Rate Limit          : %d", GlobalConfig.RateLimit)
+	SimpleLogger.Printf("Priority Fee/CU     : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*ComputeUnitLimit+5000)/float64(solana.LAMPORTS_PER_SOL))
 	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
 	SimpleLogger.Printf("")
 
@@ -432,7 +439,8 @@ func main() {
 	SimpleLogger.Printf("WS URL                 : %s", GlobalConfig.GetWsUrl())
 	SimpleLogger.Printf("RPC Send URL           : %s", GlobalConfig.GetSendUrl())
 	SimpleLogger.Printf("Transaction Count      : %d", GlobalConfig.TxCount)
-	SimpleLogger.Printf("Priority Fee           : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*30000+5000)/float64(solana.LAMPORTS_PER_SOL))
+	SimpleLogger.Printf("Rate Limit             : %d", GlobalConfig.RateLimit)
+	SimpleLogger.Printf("Priority Fee/CU        : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*ComputeUnitLimit+5000)/float64(solana.LAMPORTS_PER_SOL))
 	SimpleLogger.Printf("Node Retries           : %d", GlobalConfig.NodeRetries)
 	SimpleLogger.Printf("Transactions Landed    : %d/%d (%.1f%%)", ProcessedTransactions, SentTransactions, float64(ProcessedTransactions)/float64(SentTransactions)*100.0)
 
