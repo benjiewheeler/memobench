@@ -261,6 +261,29 @@ func VerifyPrivateKey(base58key string) {
 	TestAccount = &account
 }
 
+func AssertSufficientBalance() {
+	// Create a new RPC client:
+	rpcClient := rpc.New(GlobalConfig.RpcUrl)
+
+	// fetch the latest blockhash
+	balance, err := rpcClient.GetBalance(context.TODO(), TestAccount.PublicKey(), rpc.CommitmentFinalized)
+	if err != nil || balance == nil {
+		log.Fatalf("error getting test wallet balance: %v", err)
+	}
+
+	costPerTx := uint64(GlobalConfig.PrioFee*ComputeUnitLimit + 5000)
+	totalCost := GlobalConfig.TxCount * costPerTx
+
+	// abort if balance is less than 50% of the maximum cost
+	if balance.Value < totalCost/2 {
+		log.Fatal(
+			"Insufficient balance in test wallet.",
+			"balance", fmt.Sprintf("%.6f SOL", float64(balance.Value)/float64(solana.LAMPORTS_PER_SOL)),
+			"required", fmt.Sprintf("%.6f SOL", float64(totalCost)/float64(solana.LAMPORTS_PER_SOL)),
+		)
+	}
+}
+
 func SendTransactions() {
 	// Create a new RPC client:
 	rpcClient := rpc.New(GlobalConfig.RpcUrl)
@@ -321,7 +344,12 @@ func SendTransactions() {
 			// sleep until the next xx:xx:10s; then start spamming the transactions
 			startTime := time.Now().Truncate(5 * time.Second).Add(10 * time.Second)
 			sleepTime := time.Until(startTime)
-			log.Info("Thread sleeping until starting spam", "thread", id, "delay", sleepTime.Truncate(time.Millisecond))
+
+			// only log the first time, to avoid spamming logs
+			if id == 1 {
+				log.Info("Threads sleeping until starting spam", "delay", sleepTime.Truncate(time.Millisecond))
+			}
+
 			time.Sleep(sleepTime)
 
 			t0 := time.Now()
@@ -417,6 +445,7 @@ func main() {
 	Limiter.SetBurst(int(GlobalConfig.RateLimit))
 
 	SimpleLogger.Printf("Date                : %s", time.Now().UTC().Format(time.RFC1123))
+	SimpleLogger.Printf("Test Wallet         : %s", TestAccount.PublicKey().String())
 	SimpleLogger.Printf("Starting Test ID    : %s", TestID)
 	SimpleLogger.Printf("RPC URL             : %s", GlobalConfig.RpcUrl)
 	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
@@ -426,6 +455,9 @@ func main() {
 	SimpleLogger.Printf("Priority Fee/CU     : %f Lamports (%.9f SOL)", GlobalConfig.PrioFee, (GlobalConfig.PrioFee*ComputeUnitLimit+5000)/float64(solana.LAMPORTS_PER_SOL))
 	SimpleLogger.Printf("Node Retries        : %d", GlobalConfig.NodeRetries)
 	SimpleLogger.Printf("")
+
+	// verify test wallet balance
+	AssertSufficientBalance()
 
 	// start the websocket listener
 	wg.Add(1)
