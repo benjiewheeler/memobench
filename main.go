@@ -30,6 +30,10 @@ const (
 )
 
 var (
+	Version string = "development"
+)
+
+var (
 	DEFAULT_CONFIG = Config{
 		RpcUrl:    "http://node.foo.cc",
 		RateLimit: 200,
@@ -402,7 +406,9 @@ func main() {
 	fmt.Println(" ██║╚██╔╝██║██╔══╝  ██║╚██╔╝██║██║   ██║██╔══██╗██╔══╝  ██║╚██╗██║██║     ██╔══██║ ")
 	fmt.Println(" ██║ ╚═╝ ██║███████╗██║ ╚═╝ ██║╚██████╔╝██████╔╝███████╗██║ ╚████║╚██████╗██║  ██║ ")
 	fmt.Println(" ╚═╝     ╚═╝╚══════╝╚═╝     ╚═╝ ╚═════╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝ ╚═════╝╚═╝  ╚═╝ ")
-	fmt.Println("                                                                                   ")
+	fmt.Printf("%82s", Version)
+	fmt.Println()
+	fmt.Println()
 
 	c := make(chan os.Signal)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)

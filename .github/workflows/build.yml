@@ -44,7 +44,7 @@ jobs:
 
               output_name=$3
 
-              CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -ldflags "-extldflags=-static -s -w" -trimpath -o bin/$output_name .
+              CGO_ENABLED=0 GOOS=$1 GOARCH=$2 go build -ldflags "-extldflags=-static -s -w -X main.Version=${{ github.ref_name }}" -trimpath -o bin/$output_name .
               chmod +x bin/$output_name
           done
         shell: bash
