@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"regexp"
@@ -22,6 +23,8 @@ import (
 	"github.com/gagliardetto/solana-go/rpc/jsonrpc"
 	"github.com/gagliardetto/solana-go/rpc/ws"
 	"github.com/montanaflynn/stats"
+	"golang.org/x/text/language"
+	"golang.org/x/text/message"
 	"golang.org/x/time/rate"
 )
 
@@ -29,9 +32,7 @@ const (
 	ComputeUnitLimit = 30000
 )
 
-var (
-	Version string = "development"
-)
+var Version string = "development"
 
 var (
 	DEFAULT_CONFIG = Config{
@@ -67,6 +68,9 @@ var (
 
 	// delta between transaction send times and landing times
 	TxDeltas = []time.Duration{}
+
+	// blocks where transactions landed
+	TxBlocks = make(map[uint64]uint64)
 
 	WsListener *WebsocketListener
 
@@ -158,12 +162,23 @@ func (l *WebsocketListener) Start() {
 
 			var delta time.Duration
 			mu.Lock()
+			// record the time delta
 			txSendTime, found := TxTimes[got.Value.Signature]
 			if found {
 				ProcessedTransactions += 1
 				delta = time.Since(txSendTime)
 				TxDeltas = append(TxDeltas, delta)
+
+				// record the block where the tx landed
+				// add new entry if needed
+				if _, ok := TxBlocks[got.Context.Slot]; !ok {
+					TxBlocks[got.Context.Slot] = 0
+				}
+
+				// increment the tx count for this block
+				TxBlocks[got.Context.Slot] += 1
 			}
+
 			mu.Unlock()
 
 			// skip this tx if it's not in the TxTimes map
@@ -398,6 +413,40 @@ func SendTransactions() {
 	}
 }
 
+func DisplayBlocks() {
+	// find the first & last blocks
+	// and the block with the most transactions
+	var first uint64 = math.MaxUint64
+	var last uint64
+	var top uint64
+
+	for block, count := range TxBlocks {
+		first = uint64(math.Min(float64(first), float64(block)))
+		last = uint64(math.Max(float64(last), float64(block)))
+		top = uint64(math.Max(float64(top), float64(count)))
+	}
+
+	for block := first; block <= last; block++ {
+		count, ok := TxBlocks[block]
+		if !ok {
+			SimpleLogger.Printf("Block %s : %3d", message.NewPrinter(language.English).Sprintf("%d", block), count)
+			continue
+		}
+
+		// deduce the # of * characters to display
+		// use math.Ceil to round up to ensure we don't display 0 * characters
+		// (only for blocks with > 0 transactions)
+		stars := math.Ceil(float64(count) / float64(ProcessedTransactions) * 100)
+
+		SimpleLogger.Printf("Block %s : %3d | %5.1f%% | %s",
+			message.NewPrinter(language.English).Sprintf("%d", block),
+			count,
+			float64(count)/float64(ProcessedTransactions)*100,
+			strings.Repeat("*", int(stars)),
+		)
+	}
+}
+
 func main() {
 	fmt.Println("                                                                                   ")
 	fmt.Println(" ███╗   ███╗███████╗███╗   ███╗ ██████╗ ██████╗ ███████╗███╗   ██╗ ██████╗██╗  ██╗ ")
@@ -504,6 +553,9 @@ func main() {
 		SimpleLogger.Printf("P90 Tx Landing Time    : %s", (time.Duration(p90)).Truncate(time.Millisecond))
 		SimpleLogger.Printf("P95 Tx Landing Time    : %s", (time.Duration(p95)).Truncate(time.Millisecond))
 		SimpleLogger.Printf("P99 Tx Landing Time    : %s", (time.Duration(p99)).Truncate(time.Millisecond))
+		SimpleLogger.Printf("")
+
+		DisplayBlocks()
 	}
 	fmt.Println()
 	fmt.Printf("Benchmark results saved to %s\n", LogFileName)

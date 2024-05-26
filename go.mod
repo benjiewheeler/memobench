@@ -5,12 +5,13 @@ go 1.21.7
 require (
 	github.com/charmbracelet/log v0.4.0
 	github.com/gagliardetto/solana-go v1.10.0
+	github.com/montanaflynn/stats v0.7.1
+	golang.org/x/text v0.14.0
 	golang.org/x/time v0.5.0
 )
 
 require (
 	filippo.io/edwards25519 v1.1.0 // indirect
-	github.com/andres-erbsen/clock v0.0.0-20160526145045-9e14626cd129 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
 	github.com/benbjohnson/clock v1.3.5 // indirect
 	github.com/blendle/zapdriver v1.3.1 // indirect
@@ -34,7 +35,6 @@ require (
 	github.com/mitchellh/go-testing-interface v1.14.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.2 // indirect
-	github.com/montanaflynn/stats v0.7.1 // indirect
 	github.com/mostynb/zstdpool-freelist v0.0.0-20201229113212-927304c0c3b1 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/muesli/reflow v0.3.0 // indirect
