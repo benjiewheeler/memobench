@@ -559,4 +559,7 @@ func main() {
 	}
 	fmt.Println()
 	fmt.Printf("Benchmark results saved to %s\n", LogFileName)
+
+	fmt.Println("Press 'Enter' to exit...")
+	fmt.Scanln()
 }
