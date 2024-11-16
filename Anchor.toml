@@ -1,0 +1,6 @@
+[features]
+seeds = false
+skip-lint = false
+
+[programs.localnet]
+lock_bench = "memos5eKsok4hXwxufkppaTBrfWRjFMhqxgomv5trJ6"

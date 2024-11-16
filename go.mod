@@ -4,7 +4,10 @@ go 1.21.7
 
 require (
 	github.com/charmbracelet/log v0.4.0
+	github.com/davecgh/go-spew v1.1.1
+	github.com/gagliardetto/binary v0.8.0
 	github.com/gagliardetto/solana-go v1.10.0
+	github.com/gagliardetto/treeout v0.1.4
 	github.com/montanaflynn/stats v0.7.1
 	golang.org/x/text v0.14.0
 	golang.org/x/time v0.5.0
@@ -17,10 +20,7 @@ require (
 	github.com/blendle/zapdriver v1.3.1 // indirect
 	github.com/buger/jsonparser v1.1.1 // indirect
 	github.com/charmbracelet/lipgloss v0.10.0 // indirect
-	github.com/davecgh/go-spew v1.1.1 // indirect
 	github.com/fatih/color v1.16.0 // indirect
-	github.com/gagliardetto/binary v0.8.0 // indirect
-	github.com/gagliardetto/treeout v0.1.4 // indirect
 	github.com/go-logfmt/logfmt v0.6.0 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/rpc v1.2.1 // indirect

@@ -1,3 +1,13 @@
+> [!NOTE]
+>
+> - This branch contains the upgraded version (v1.x.x) of this tool, with a custom program to support write locks.
+> - The first version of this tool (v0.x.x) that works with the [SPL memo program](https://spl.solana.com/memo) is in the `master` branch.
+
+> [!IMPORTANT]
+> This is an experimental feature, the custom program in this branch is deployed **ONLY** to the devnet at `memos5eKsok4hXwxufkppaTBrfWRjFMhqxgomv5trJ6`
+>
+> I do **NOT** plan to deploy it to the mainnet due to monetary cost, Anyone interested in deploying it themselves is welcome to do so and submit a pull request with the deployement address.
+
 # memobench
 
 Solana RPC benchmarking tool
@@ -27,6 +37,7 @@ This is a simple CLI tool that allows you to send transactions to an RPC endpoin
 - `rate_limit`: The rate limit (in requests per second)
 - `tx_count`: The number of transactions to send
 - `prio_fee`: The priority fee in Lamports per Compute Unit _(optional, if omitted, no priority fee will be used)_
+- `bench_type`: The type of the test to perform, `memo` for the regular memo benchmark, `lock` for a custom benchmark with write lock
 - `node_retries`: The number of retries the RPC will rebroadcast the transaction
 
 > [!IMPORTANT]
@@ -38,8 +49,10 @@ This tool works by sending a predefined number (`tx_count`) of unique transactio
 
 The transactions are sent all at once in parallel if possible, the tool will make sure to stay under the defined `rate_limit` to avoid getting 429 errors from the RPC.
 
-The transactions sent are simple memo program transactions that each contain a unique memo in the form of `memobench: Test <number> [<id>]`.
-The `<number>` part is used to ensure the memo is unique and by extension the transaction is unique, the `<id>` part is used to differentiate between individual tests.
+For the memo bench, the transactions sent are simple transactions that each contain a unique memo in the form of `memobench(Memo): test=<test_id> round=<tx_number>`.
+The `round` part is used to ensure the memo is unique and by extension the transaction is unique, the `test` part is used to differentiate between individual tests.
+
+For the lock bench, the transactions sent increment a global counter, this a write lock on that account until the transaction is done, also contain a unique memo in the form of `memobench(Lock): test=<test_id> round=<tx_number> n=<counter>`.
 
 ## You like this tool ?
 

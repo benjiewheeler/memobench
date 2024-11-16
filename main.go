@@ -10,12 +10,12 @@ import (
 	"math"
 	"os"
 	"os/signal"
-	"regexp"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	"github.com/benjiewheeler/memobench/lock_bench"
 	"github.com/charmbracelet/log"
 	"github.com/gagliardetto/solana-go"
 	computebudget "github.com/gagliardetto/solana-go/programs/compute-budget"
@@ -28,8 +28,13 @@ import (
 	"golang.org/x/time/rate"
 )
 
+type TestType string
+
 const (
 	ComputeUnitLimit = 30000
+
+	TypeLock TestType = "lock"
+	TypeMemo TestType = "memo"
 )
 
 var Version string = "development"
@@ -40,7 +45,10 @@ var (
 		RateLimit: 200,
 		TxCount:   100,
 		PrioFee:   0,
+		Type:      TypeMemo,
 	}
+
+	CounterLockAddress, _, _ = solana.FindProgramAddress([][]byte{[]byte("counter")}, lock_bench.ProgramID)
 
 	TestID string
 
@@ -60,6 +68,7 @@ var (
 	StopTime time.Time
 
 	// the number of transactions sent and transactions that landed
+	QueuedTransactions    uint64
 	SentTransactions      uint64
 	ProcessedTransactions uint64
 
@@ -78,14 +87,15 @@ var (
 )
 
 type Config struct {
-	PrivateKey  string  `json:"private_key"`
-	RpcUrl      string  `json:"rpc_url"`
-	WsUrl       string  `json:"ws_url"`
-	SendRpcUrl  string  `json:"send_rpc_url"`
-	RateLimit   uint64  `json:"rate_limit"`
-	TxCount     uint64  `json:"tx_count"`
-	PrioFee     float64 `json:"prio_fee"`
-	NodeRetries uint    `json:"node_retries"`
+	PrivateKey  string   `json:"private_key"`
+	RpcUrl      string   `json:"rpc_url"`
+	WsUrl       string   `json:"ws_url"`
+	SendRpcUrl  string   `json:"send_rpc_url"`
+	Type        TestType `json:"bench_type"`
+	RateLimit   uint64   `json:"rate_limit"`
+	TxCount     uint64   `json:"tx_count"`
+	PrioFee     float64  `json:"prio_fee"`
+	NodeRetries uint     `json:"node_retries"`
 }
 
 func (c *Config) GetWsUrl() string {
@@ -103,6 +113,52 @@ func (c *Config) GetSendUrl() string {
 	}
 
 	return c.RpcUrl
+}
+
+// parses a log line and extracts the test type, ID, round.
+//
+// Args:
+//
+//	line (string): The log line to parse.
+//
+// Returns:
+//
+//	(string, string, string, error):
+//	  - type: The type of test (e.g., "memo", "lock").
+//	  - id: The unique identifier of the test.
+//	  - round: The id of the transaction within the test.
+//	  - error: Any error encountered during parsing.
+func parseLogLine(line string) (string, string, string, error) {
+	line = strings.ReplaceAll(line, "Program log:", "")
+
+	parts := strings.Split(strings.TrimSpace(line), ":")
+	if len(parts) != 2 {
+		return "", "", "", fmt.Errorf("invalid log line: %s", line)
+	}
+
+	// extract the test type, remove the memobench prefix and the parentheses
+	testType := strings.ToLower(
+		strings.ReplaceAll(
+			strings.ReplaceAll(
+				strings.ReplaceAll(
+					parts[0], "memobench", "",
+				),
+				"(", "",
+			), ")", "",
+		),
+	)
+
+	// split the second part into key=value pairs map
+	kvMap := make(map[string]string)
+	pairs := strings.Split(parts[1], " ")
+	for _, v := range pairs {
+		kv := strings.Split(v, "=")
+		if len(kv) == 2 {
+			kvMap[kv[0]] = kv[1]
+		}
+	}
+
+	return testType, kvMap["test"], kvMap["round"], nil
 }
 
 type WebsocketListener struct {
@@ -130,7 +186,7 @@ func (l *WebsocketListener) Start() {
 	log.Info("Listening for transactions...")
 
 	// start sending transactions now that the websocket is ready
-	SendTransactions()
+	go SendTransactions()
 
 	for l.Listening {
 		got, err := l.Subscription.Recv()
@@ -142,18 +198,21 @@ func (l *WebsocketListener) Start() {
 			continue
 		}
 
-		re := regexp.MustCompile(`memobench:.*?(\d+).*\[(.*?)\]`)
 		for _, line := range got.Value.Logs {
-			matches := re.FindStringSubmatch(line)
-			if len(matches) != 3 {
+			if !strings.Contains(line, "memobench") {
 				continue
 			}
-			testNum, id := matches[1], matches[2]
 
-			if id != TestID {
+			testType, id, round, err := parseLogLine(line)
+			if err != nil {
+				log.Warnf("Failed to parse log line: %v", err)
+				continue
+			}
+
+			if id != TestID || testType != string(GlobalConfig.Type) {
 				log.Warn(
-					"Received unexpected test ID",
-					"num", testNum,
+					"Received unexpected test result",
+					"num", round,
 					"id", id,
 					"sig", got.Value.Signature.String(),
 				)
@@ -189,15 +248,16 @@ func (l *WebsocketListener) Start() {
 
 			log.Info(
 				"Tx Processed",
-				"num", testNum,
+				"num", round,
 				"sig", got.Value.Signature.String(),
 				"delta", delta.Truncate(time.Millisecond).String(),
 				"landed", fmt.Sprintf("%d/%d", ProcessedTransactions, SentTransactions),
 			)
 
-			if ProcessedTransactions >= SentTransactions {
+			if ProcessedTransactions >= SentTransactions && QueuedTransactions == 0 {
 				l.Stop()
 			}
+
 			break
 		}
 	}
@@ -324,6 +384,10 @@ func SendTransactions() {
 
 	for i := uint64(0); i < GlobalConfig.TxCount; i++ {
 		go func(id uint64) {
+			mu.Lock()
+			QueuedTransactions += 1
+			mu.Unlock()
+
 			instructions := []solana.Instruction{}
 
 			if GlobalConfig.PrioFee > 0 {
@@ -331,13 +395,27 @@ func SendTransactions() {
 				instructions = append(instructions, computebudget.NewSetComputeUnitLimitInstruction(ComputeUnitLimit).Build())
 			}
 
-			instructions = append(instructions, solana.NewInstruction(
-				solana.MemoProgramID,
-				solana.AccountMetaSlice{
-					solana.NewAccountMeta(TestAccount.PublicKey(), false, true),
-				},
-				[]byte(fmt.Sprintf("memobench: Test %d [%s]", id, TestID)),
-			))
+			switch GlobalConfig.Type {
+			case TypeMemo:
+				instructions = append(
+					instructions,
+					lock_bench.NewMemoInstruction(
+						[]byte(fmt.Sprintf("test=%s round=%d", TestID, id)),
+					).Build(),
+				)
+			case TypeLock:
+				instructions = append(
+					instructions,
+					lock_bench.NewLockInstruction(
+						[]byte(fmt.Sprintf("test=%s round=%d", TestID, id)),
+						TestAccount.PublicKey(),
+						CounterLockAddress,
+						solana.SystemProgramID,
+					).Build(),
+				)
+			default:
+				log.Fatal("invalid test type, aborting all")
+			}
 
 			tx, err := solana.NewTransaction(
 				instructions,
@@ -382,6 +460,10 @@ func SendTransactions() {
 			if throttleTime > 0 {
 				log.Info("Thread throttled to respect rate-limit, Sending now", "thread", id, "delay", throttleTime)
 			}
+
+			mu.Lock()
+			QueuedTransactions -= 1
+			mu.Unlock()
 
 			log.Infof("Sending Tx [%s]", tx.Signatures[0])
 
@@ -459,7 +541,7 @@ func main() {
 	fmt.Println()
 	fmt.Println()
 
-	c := make(chan os.Signal)
+	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
 	go func() {
 		<-c
@@ -495,12 +577,18 @@ func main() {
 	// verify the private key is valid
 	VerifyPrivateKey(GlobalConfig.PrivateKey)
 
+	// verify if the test type is valid
+	if GlobalConfig.Type != TypeMemo && GlobalConfig.Type != TypeLock {
+		log.Fatal("invalid test type, must be 'memo' or 'lock'")
+	}
+
 	// set the rate limit
 	Limiter.SetLimit(rate.Limit(GlobalConfig.RateLimit))
 	Limiter.SetBurst(int(GlobalConfig.RateLimit))
 
 	SimpleLogger.Printf("Date                : %s", time.Now().UTC().Format(time.RFC1123))
 	SimpleLogger.Printf("Test Wallet         : %s", TestAccount.PublicKey().String())
+	SimpleLogger.Printf("Test Type           : %s", GlobalConfig.Type)
 	SimpleLogger.Printf("Starting Test ID    : %s", TestID)
 	SimpleLogger.Printf("RPC URL             : %s", GlobalConfig.RpcUrl)
 	SimpleLogger.Printf("WS URL              : %s", GlobalConfig.GetWsUrl())
@@ -522,6 +610,7 @@ func main() {
 
 	SimpleLogger.Printf("")
 	SimpleLogger.Printf("Finished Test ID       : %s", TestID)
+	SimpleLogger.Printf("Test Type              : %s", GlobalConfig.Type)
 	SimpleLogger.Printf("RPC URL                : %s", GlobalConfig.RpcUrl)
 	SimpleLogger.Printf("WS URL                 : %s", GlobalConfig.GetWsUrl())
 	SimpleLogger.Printf("RPC Send URL           : %s", GlobalConfig.GetSendUrl())
