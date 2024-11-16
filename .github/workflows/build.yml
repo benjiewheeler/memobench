@@ -31,10 +31,10 @@ jobs:
         working-directory: .
         run: |
           platforms=(
-              "darwin amd64 memobench_macos_x86_64"
-              "darwin arm64 memobench_macos_arm64"
-              "linux amd64 memobench_linux_x86_64"
-              "windows amd64 memobench_windows_x86_64.exe"
+              "darwin  amd64 memobench_${{ github.ref_name }}_macos_x86_64"
+              "darwin  arm64 memobench_${{ github.ref_name }}_macos_arm64"
+              "linux   amd64 memobench_${{ github.ref_name }}_linux_x86_64"
+              "windows amd64 memobench_${{ github.ref_name }}_windows_x86_64.exe"
           )
 
           mkdir -p bin 2>/dev/null
